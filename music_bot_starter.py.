@@ -1,0 +1,126 @@
+
+import os
+import sqlite3
+import asyncio
+import aiohttp
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+db = sqlite3.connect("music.db")
+db.execute("""
+CREATE TABLE IF NOT EXISTS favorites (
+    user_id INTEGER,
+    title TEXT,
+    url TEXT
+)
+""")
+db.commit()
+
+
+def menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Найти музыку", callback_data="search")],
+        [InlineKeyboardButton(text="❤️ Избранное", callback_data="favorites")],
+        [InlineKeyboardButton(text="🎵 Мои плейлисты", callback_data="playlists")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")]
+    ])
+
+
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    await message.answer(
+        "🎧 Добро пожаловать в Music Bot!\n\nВыбери действие:",
+        reply_markup=menu()
+    )
+
+
+@dp.callback_query()
+async def buttons(call: types.CallbackQuery):
+    if call.data == "search":
+        await call.message.answer("Напиши название песни или исполнителя:")
+        await call.answer()
+
+    elif call.data == "favorites":
+        rows = db.execute(
+            "SELECT title FROM favorites WHERE user_id=?",
+            (call.from_user.id,)
+        ).fetchall()
+
+        if rows:
+            await call.message.answer(
+                "❤️ Избранное:\n" + "\n".join(x[0] for x in rows)
+            )
+        else:
+            await call.message.answer("Пока здесь пусто.")
+
+        await call.answer()
+
+    elif call.data == "playlists":
+        await call.message.answer("🎵 Создание плейлистов добавим следующим шагом.")
+        await call.answer()
+
+    elif call.data == "settings":
+        await call.message.answer("⚙️ Настройки скоро появятся.")
+        await call.answer()
+
+
+@dp.message()
+async def search_music(message: types.Message):
+    query = message.text.strip()
+
+    await message.answer("🔎 Ищу музыку...")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.deezer.com/search",
+                params={"q": query}
+            ) as response:
+                data = await response.json()
+
+        tracks = data.get("data", [])[:5]
+
+        if not tracks:
+            await message.answer("Ничего не найдено.")
+            return
+
+        for track in tracks:
+            title = track["title"]
+            artist = track["artist"]["name"]
+            preview = track.get("preview")
+
+            if not preview:
+                continue
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="❤️ В избранное",
+                    callback_data="save_" + str(track["id"])
+                )]
+            ])
+
+            await message.answer(
+                f"🎵 {title} — {artist}\n{preview}",
+                reply_markup=keyboard
+            )
+
+    except Exception:
+        await message.answer("Ошибка поиска. Попробуй ещё раз.")
+
+
+async def main():
+    if not TOKEN:
+        raise RuntimeError("Не задан BOT_TOKEN")
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
